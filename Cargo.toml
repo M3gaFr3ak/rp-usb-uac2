@@ -1,0 +1,32 @@
+[package]
+edition = "2021"
+name = "rp-usb-uac2"
+version = "0.1.0"
+authors = ["Leon Andrea Loeser <info@leon-loeser.de>"]
+resolver = "2"
+
+[dependencies]
+defmt = "0.3"
+defmt-rtt = "0.4"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+embedded-hal = "1.0.0"
+embedded-hal-async = "1.0.0"
+embedded-io = "0.6.1"
+embedded-io-async = "0.6.1"
+embedded-storage = "0.3.1"
+
+cortex-m-rt = "0.7.3"
+
+embassy-executor = { version = "0.5.0", features = ["task-arena-size-8192", "arch-cortex-m", "executor-thread", "defmt", "integrated-timers", "executor-interrupt"] }
+embassy-sync = { version = "0.5.0" }
+embassy-time = { version = "0.3.0", features = ["defmt", "defmt-timestamp-uptime"] }
+
+cortex-m = { version = "0.7.6" }
+embassy-rp = { version = "0.1.0", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl"] }
+embassy-usb = "0.3.0"
+heapless = "0.8.0"
+static_cell = "2.1.0"
+portable-atomic = { version = "1.5", features = ["critical-section"] }
+embedded-alloc = "0.6.0"
+embassy-futures = "0.1.1"
