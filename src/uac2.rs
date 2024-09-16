@@ -87,13 +87,10 @@ impl<'a> Control<'a> {
 
 pub struct UAC2<'d, D: Driver<'d>> {
     conf_ep: D::EndpointIn,
-    //_data_if: InterfaceNumber,
     read_ep_spk_1: D::EndpointOut,
-    read_ep_spk_2: D::EndpointOut,
+    //read_ep_spk_2: D::EndpointOut,
     write_ep_mic_1: D::EndpointIn,
-    write_ep_mic_2: D::EndpointIn,
-    //write_ep: D::EndpointIn,
-    //control: &'d ControlShared,
+    //write_ep_mic_2: D::EndpointIn,
     control: &'d ControlShared,
 }
 
@@ -320,12 +317,13 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
         ];
         alt_as_spk_2.descriptor(CS_INTERFACE, descr_format_spk_1);
         //  Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1
-        let read_ep_spk_2 = alt_as_spk_2.endpoint_isochronous_out(
+        let read_ep_spk_2 = alt_as_spk_2.endpoint_isochronous_out_allocated(
             392,
             1,
             SynchronizationType::Adaptive,
             UsageType::DataEndpoint,
             &[],
+            &read_ep_spk_1,
         );
         //  Class-Specific AS Isochronous Audio Data Endpoint Descriptor(4.10.1.2)
         let descr_ep_spk_2 = descr_ep_spk_1;
@@ -409,12 +407,13 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
         ];
         alt_as_mic_2.descriptor(CS_INTERFACE, descr_format_mic_2);
         //  Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1
-        let write_ep_mic_2 = alt_as_mic_2.endpoint_isochronous_in(
+        let write_ep_mic_2 = alt_as_mic_2.endpoint_isochronous_in_allocated(
             196,
             1,
             SynchronizationType::Asynchronous,
             UsageType::DataEndpoint,
             &[],
+            &write_ep_mic_1,
         );
         //  Class-Specific AS Isochronous Audio Data Endpoint Descriptor(4.10.1.2)
         let descr_ep_mic_2 = descr_ep_mic_1;
@@ -433,9 +432,9 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
         UAC2 {
             conf_ep,
             read_ep_spk_1,
-            read_ep_spk_2,
+            //read_ep_spk_2,
             write_ep_mic_1,
-            write_ep_mic_2,
+            //write_ep_mic_2,
             control: control_shared,
         }
     }
@@ -445,19 +444,9 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
         &mut self.read_ep_spk_1 //.read(buf.as_mut_slice()).await;
     }
 
-    pub fn read_ep_spk_2(&mut self) -> &mut <D as Driver<'d>>::EndpointOut {
-        //let mut buf: [u8; 64] = [0; 64];
-        &mut self.read_ep_spk_2 //.read(buf.as_mut_slice()).await;
-    }
-
     pub fn write_ep_mic_1(&mut self) -> &mut <D as Driver<'d>>::EndpointIn {
         //let mut buf: [u8; 64] = [0; 64];
         &mut self.write_ep_mic_1 //.read(buf.as_mut_slice()).await;
-    }
-
-    pub fn write_ep_mic_2(&mut self) -> &mut <D as Driver<'d>>::EndpointIn {
-        //let mut buf: [u8; 64] = [0; 64];
-        &mut self.write_ep_mic_2 //.read(buf.as_mut_slice()).await;
     }
 
     pub fn conf_ep(self) -> <D as Driver<'d>>::EndpointIn {
@@ -473,7 +462,7 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
                     let mut data = [0; 196];
                     match self.read_ep_spk_1.read(&mut data).await {
                         Ok(n) => {
-                            info!("Got bulk: {:a}", data[..n]);
+                            //info!("Got bulk: {:a}", data[..n]);
                             // Echo back to the host:
                             // write_ep.write(&data[..n]).await.ok();
                         }
@@ -483,7 +472,7 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
                 info!("Disconnected");
             }
         };
-        let fut_spk_2 = async {
+        /*         let fut_spk_2 = async {
             loop {
                 self.read_ep_spk_2.wait_enabled().await;
                 info!("Connected");
@@ -491,7 +480,7 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
                     let mut data = [0; 392];
                     match self.read_ep_spk_2.read(&mut data).await {
                         Ok(n) => {
-                            info!("Got bulk: {:a}", data[..n]);
+                            //info!("Got bulk: {:a}", data[..n]);
                             // Echo back to the host:
                             // write_ep.write(&data[..n]).await.ok();
                         }
@@ -502,12 +491,12 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
             }
         };
 
-        join(fut_spk_1, fut_spk_2).await;
+        join(fut_spk_1, fut_spk_2).await; */
+        fut_spk_1.await;
     }
 }
 
 impl<'d> Handler for Control<'d> {
-    /*
     fn enabled(&mut self, _enabled: bool) {
         info!("enabled");
     }
@@ -516,11 +505,10 @@ impl<'d> Handler for Control<'d> {
         info!("reset");
     }
 
-    */
     fn addressed(&mut self, _addr: u8) {
         info!("addressed {}", _addr);
     }
-    /*
+
     fn configured(&mut self, _configured: bool) {
         info!("configured");
     }
@@ -532,12 +520,12 @@ impl<'d> Handler for Control<'d> {
     fn remote_wakeup_enabled(&mut self, _enabled: bool) {
         info!("remote_wakeup_enabled");
     }
-        fn set_alternate_setting(&mut self, iface: InterfaceNumber, alternate_setting: u8) {
-            let _ = iface;
-            let _ = alternate_setting;
-            info!("set_alternate_setting");
-        }
-    */
+    fn set_alternate_setting(&mut self, iface: InterfaceNumber, alternate_setting: u8) {
+        let _ = iface;
+        let _ = alternate_setting;
+        info!("set_alternate_setting");
+    }
+
     fn control_out(&mut self, req: Request, data: &[u8]) -> Option<OutResponse> {
         let _ = (req, data);
         info!("control_out");
