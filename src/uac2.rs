@@ -7,6 +7,7 @@ use core::future::poll_fn;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
+use embassy_rp::usb::{SynchronizationType, UsageType};
 use pretty_hex::*;
 
 use alloc::vec;
@@ -17,7 +18,6 @@ use embassy_futures::join::join;
 use embassy_rp::pac::xip_ctrl::regs::Stat;
 use embassy_sync::waitqueue::WakerRegistration;
 use embassy_usb::control::{InResponse, OutResponse, Request};
-use embassy_usb::descriptor::{SynchronizationType, UsageType};
 use embassy_usb::driver::{Driver, Endpoint, EndpointOut};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::types::StringIndex;
@@ -282,7 +282,7 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
         alt_as_spk_1.descriptor(CS_INTERFACE, descr_format_spk_1);
 
         //  Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1
-        let read_ep_spk_1 = alt_as_spk_1.endpoint_isochronous_out(
+        let mut read_ep_spk_1 = alt_as_spk_1.endpoint_isochronous_out(
             196,
             1,
             SynchronizationType::Adaptive,
@@ -323,7 +323,7 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
             SynchronizationType::Adaptive,
             UsageType::DataEndpoint,
             &[],
-            &read_ep_spk_1,
+            &mut read_ep_spk_1,
         );
         //  Class-Specific AS Isochronous Audio Data Endpoint Descriptor(4.10.1.2)
         let descr_ep_spk_2 = descr_ep_spk_1;
@@ -370,7 +370,7 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
         ];
         alt_as_mic_1.descriptor(CS_INTERFACE, descr_format_mic_1);
         //  Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1
-        let write_ep_mic_1 = alt_as_mic_1.endpoint_isochronous_in(
+        let mut write_ep_mic_1 = alt_as_mic_1.endpoint_isochronous_in(
             98,
             1,
             SynchronizationType::Asynchronous,
@@ -413,7 +413,7 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
             SynchronizationType::Asynchronous,
             UsageType::DataEndpoint,
             &[],
-            &write_ep_mic_1,
+            &mut write_ep_mic_1,
         );
         //  Class-Specific AS Isochronous Audio Data Endpoint Descriptor(4.10.1.2)
         let descr_ep_mic_2 = descr_ep_mic_1;
@@ -459,39 +459,23 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
                 self.read_ep_spk_1.wait_enabled().await;
                 info!("Connected");
                 loop {
-                    let mut data = [0; 196];
+                    let mut data = [0; 400];
                     match self.read_ep_spk_1.read(&mut data).await {
                         Ok(n) => {
+                            info!("Read stuff {:a}", data[..n]);
                             //info!("Got bulk: {:a}", data[..n]);
                             // Echo back to the host:
                             // write_ep.write(&data[..n]).await.ok();
                         }
-                        Err(_) => break,
+                        Err(error) => {
+                            info!("Read error {:#?}", error);
+                            break;
+                        }
                     }
                 }
                 info!("Disconnected");
             }
         };
-        /*         let fut_spk_2 = async {
-            loop {
-                self.read_ep_spk_2.wait_enabled().await;
-                info!("Connected");
-                loop {
-                    let mut data = [0; 392];
-                    match self.read_ep_spk_2.read(&mut data).await {
-                        Ok(n) => {
-                            //info!("Got bulk: {:a}", data[..n]);
-                            // Echo back to the host:
-                            // write_ep.write(&data[..n]).await.ok();
-                        }
-                        Err(_) => break,
-                    }
-                }
-                info!("Disconnected");
-            }
-        };
-
-        join(fut_spk_1, fut_spk_2).await; */
         fut_spk_1.await;
     }
 }

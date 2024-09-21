@@ -49,15 +49,14 @@ embassy-futures = "0.1.1"
 pretty-hex = "0.4.1"
 
 [patch.crates-io]
-embassy-usb = { git = "https://github.com/M3gaFr3ak/embassy", rev = "8ede22962e2bc5caddf2a46a55fbe3a32f61407b" }
-embassy-usb-driver = { git = "https://github.com/M3gaFr3ak/embassy", rev = "8ede22962e2bc5caddf2a46a55fbe3a32f61407b" }
-embassy-rp = { git = "https://github.com/M3gaFr3ak/embassy", rev = "8ede22962e2bc5caddf2a46a55fbe3a32f61407b", version = "0.2.0", features = [
+embassy-usb = { git = "https://github.com/M3gaFr3ak/embassy", rev = "b7a2a106c2c5630335a75a74f813c6c41977d6fc" }
+embassy-rp = { git = "https://github.com/M3gaFr3ak/embassy", rev = "b7a2a106c2c5630335a75a74f813c6c41977d6fc", version = "0.2.0", features = [
     "defmt",
     "unstable-pac",
     "time-driver",
     "critical-section-impl",
     "rp2040",
 ] }
-embassy-time = { git = "https://github.com/M3gaFr3ak/embassy", rev = "8ede22962e2bc5caddf2a46a55fbe3a32f61407b" }
-embassy-time-driver = { version = "0.1.0", git = "https://github.com/M3gaFr3ak/embassy", rev = "8ede22962e2bc5caddf2a46a55fbe3a32f61407b" }
-embassy-time-queue-driver = { version = "0.1.0", git = "https://github.com/M3gaFr3ak/embassy", rev = "8ede22962e2bc5caddf2a46a55fbe3a32f61407b" }
+embassy-time = { git = "https://github.com/M3gaFr3ak/embassy", rev = "b7a2a106c2c5630335a75a74f813c6c41977d6fc" }
+embassy-time-driver = { version = "0.1.0", git = "https://github.com/M3gaFr3ak/embassy", rev = "b7a2a106c2c5630335a75a74f813c6c41977d6fc" }
+embassy-time-queue-driver = { version = "0.1.0", git = "https://github.com/M3gaFr3ak/embassy", rev = "b7a2a106c2c5630335a75a74f813c6c41977d6fc" }
