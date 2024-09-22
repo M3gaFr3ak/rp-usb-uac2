@@ -7,7 +7,11 @@ use core::future::poll_fn;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
+use embassy_executor::Spawner;
+use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{SynchronizationType, UsageType};
+use embassy_sync::blocking_mutex::NoopMutex;
+use embassy_sync::pipe::WriteFuture;
 use pretty_hex::*;
 
 use alloc::vec;
@@ -18,7 +22,7 @@ use embassy_futures::join::join;
 use embassy_rp::pac::xip_ctrl::regs::Stat;
 use embassy_sync::waitqueue::WakerRegistration;
 use embassy_usb::control::{InResponse, OutResponse, Request};
-use embassy_usb::driver::{Driver, Endpoint, EndpointOut};
+use embassy_usb::driver::{Driver, Endpoint, EndpointIn, EndpointOut};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::types::StringIndex;
 use embassy_usb::{Builder, Handler};
@@ -54,6 +58,9 @@ struct ControlShared {
     waker: RefCell<WakerRegistration>,
     changed: AtomicBool,
 }
+pub struct ControlChanged<'d> {
+    control: &'d ControlShared,
+}
 
 impl Default for ControlShared {
     fn default() -> Self {
@@ -82,6 +89,18 @@ impl ControlShared {
 impl<'a> Control<'a> {
     fn shared(&mut self) -> &'a ControlShared {
         self.shared
+    }
+}
+
+pub struct AudioReaderWriter<'d, D: Driver<'d>> {
+    pub conf_ep: D::EndpointIn,
+    pub read_ep_spk: D::EndpointOut,
+    pub write_ep_mic: D::EndpointIn,
+}
+
+impl<'d, D: Driver<'d>> AudioReaderWriter<'d, D> {
+    pub fn split(self) -> (D::EndpointIn, D::EndpointOut, D::EndpointIn) {
+        (self.conf_ep, self.read_ep_spk, self.write_ep_mic)
     }
 }
 
@@ -439,44 +458,17 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
         }
     }
 
-    pub fn read_ep_spk_1(&mut self) -> &mut <D as Driver<'d>>::EndpointOut {
-        //let mut buf: [u8; 64] = [0; 64];
-        &mut self.read_ep_spk_1 //.read(buf.as_mut_slice()).await;
-    }
-
-    pub fn write_ep_mic_1(&mut self) -> &mut <D as Driver<'d>>::EndpointIn {
-        //let mut buf: [u8; 64] = [0; 64];
-        &mut self.write_ep_mic_1 //.read(buf.as_mut_slice()).await;
-    }
-
-    pub fn conf_ep(self) -> <D as Driver<'d>>::EndpointIn {
-        self.conf_ep
-    }
-
-    pub async fn stuff(&mut self) {
-        let fut_spk_1 = async {
-            loop {
-                self.read_ep_spk_1.wait_enabled().await;
-                info!("Connected");
-                loop {
-                    let mut data = [0; 400];
-                    match self.read_ep_spk_1.read(&mut data).await {
-                        Ok(n) => {
-                            info!("Read stuff {:a}", data[..n]);
-                            //info!("Got bulk: {:a}", data[..n]);
-                            // Echo back to the host:
-                            // write_ep.write(&data[..n]).await.ok();
-                        }
-                        Err(error) => {
-                            info!("Read error {:#?}", error);
-                            break;
-                        }
-                    }
-                }
-                info!("Disconnected");
-            }
-        };
-        fut_spk_1.await;
+    pub fn split(self) -> (ControlChanged<'d>, AudioReaderWriter<'d, D>) {
+        (
+            ControlChanged {
+                control: self.control,
+            },
+            AudioReaderWriter {
+                conf_ep: self.conf_ep,
+                read_ep_spk: self.read_ep_spk_1,
+                write_ep_mic: self.write_ep_mic_1,
+            },
+        )
     }
 }
 
