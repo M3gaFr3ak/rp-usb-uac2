@@ -47,6 +47,7 @@ portable-atomic = { version = "1.5", features = ["critical-section"] }
 embedded-alloc = "0.6.0"
 embassy-futures = "0.1.1"
 pretty-hex = "0.4.1"
+rand = { version = "0.8.3", features = ["small_rng"], default-features = false }
 
 [patch.crates-io]
 embassy-usb = { git = "https://github.com/M3gaFr3ak/embassy", rev = "b7a2a106c2c5630335a75a74f813c6c41977d6fc" }

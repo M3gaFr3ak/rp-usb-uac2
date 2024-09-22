@@ -1,32 +1,22 @@
-#![feature(alloc)]
 extern crate alloc;
 
 use core::cell::RefCell;
-use core::fmt;
 use core::future::poll_fn;
+use core::i16;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
-use embassy_executor::Spawner;
-use embassy_rp::peripherals::USB;
+use embassy_futures::select;
 use embassy_rp::usb::{SynchronizationType, UsageType};
-use embassy_sync::blocking_mutex::NoopMutex;
-use embassy_sync::pipe::WriteFuture;
-use pretty_hex::*;
 
 use alloc::vec;
 
-use defmt::{info, println};
-use embassy_futures::join::join;
-
-use embassy_rp::pac::xip_ctrl::regs::Stat;
+use defmt::info;
 use embassy_sync::waitqueue::WakerRegistration;
-use embassy_usb::control::{InResponse, OutResponse, Request};
-use embassy_usb::driver::{Driver, Endpoint, EndpointIn, EndpointOut};
+use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
+use embassy_usb::driver::{Direction, Driver, Endpoint, EndpointError, EndpointIn, EndpointOut};
 use embassy_usb::types::InterfaceNumber;
-use embassy_usb::types::StringIndex;
 use embassy_usb::{Builder, Handler};
-use heapless::Vec;
 
 pub struct State<'a> {
     control: MaybeUninit<Control<'a>>,
@@ -99,17 +89,52 @@ pub struct AudioReaderWriter<'d, D: Driver<'d>> {
 }
 
 impl<'d, D: Driver<'d>> AudioReaderWriter<'d, D> {
-    pub fn split(self) -> (D::EndpointIn, D::EndpointOut, D::EndpointIn) {
-        (self.conf_ep, self.read_ep_spk, self.write_ep_mic)
+    pub fn split(self) -> (AudioReader<'d, D>, AudioWriter<'d, D>) {
+        (
+            AudioReader {
+                read_ep_spk: self.read_ep_spk,
+            },
+            AudioWriter {
+                _conf_ep: self.conf_ep,
+                write_ep_mic: self.write_ep_mic,
+            },
+        )
+    }
+}
+
+pub struct AudioReader<'d, D: Driver<'d>> {
+    read_ep_spk: D::EndpointOut,
+}
+
+impl<'d, D: Driver<'d>> AudioReader<'d, D> {
+    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
+        self.read_ep_spk.read(buf).await
+    }
+
+    pub async fn wait_enabled(&mut self) {
+        self.read_ep_spk.wait_enabled().await
+    }
+}
+
+pub struct AudioWriter<'d, D: Driver<'d>> {
+    _conf_ep: D::EndpointIn,
+    write_ep_mic: D::EndpointIn,
+}
+
+impl<'d, D: Driver<'d>> AudioWriter<'d, D> {
+    pub async fn write(&mut self, buf: &[u8]) -> Result<(), EndpointError> {
+        self.write_ep_mic.write(buf).await
+    }
+
+    pub async fn wait_enabled(&mut self) {
+        self.write_ep_mic.wait_enabled().await
     }
 }
 
 pub struct UAC2<'d, D: Driver<'d>> {
     conf_ep: D::EndpointIn,
     read_ep_spk_1: D::EndpointOut,
-    //read_ep_spk_2: D::EndpointOut,
     write_ep_mic_1: D::EndpointIn,
-    //write_ep_mic_2: D::EndpointIn,
     control: &'d ControlShared,
 }
 
@@ -451,9 +476,7 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
         UAC2 {
             conf_ep,
             read_ep_spk_1,
-            //read_ep_spk_2,
             write_ep_mic_1,
-            //write_ep_mic_2,
             control: control_shared,
         }
     }
@@ -508,24 +531,113 @@ impl<'d> Handler for Control<'d> {
         Some(OutResponse::Accepted)
     }
     fn control_in<'a>(&'a mut self, req: Request, buf: &'a mut [u8]) -> Option<InResponse<'a>> {
+        static vol: &[u8; 8] = &[0x01, 0x00, 0x01, 0x80, 0xFF, 0x7F, 0x01, 0x00];
+        let volmax = (i16::MAX).to_le_bytes();
+        let freq48 = (48 as u32).to_le_bytes();
+        let unmuted = [0 as u8];
+        let freq: [u8; 26] = layout_3_range_fixed_2(44100, 48000);
+
         info!("control_in");
         info!("{:#?}", req);
         info!("{}", buf);
 
-        static vol: &[u8; 8] = &[0x01, 0x00, 0x01, 0x80, 0xFF, 0x7F, 0x01, 0x00];
-        static f44_1: [u8; 4] = (44100 as u32).to_le_bytes();
-        static f48: [u8; 4] = (48000 as u32).to_le_bytes();
-        static freq: &[u8; 26] = &[
-            0x02, 0x00, f44_1[0], f44_1[1], f44_1[2], f44_1[3], f44_1[0], f44_1[1], f44_1[2],
-            f44_1[3], 0x00, 0x00, 0x00, 0x00, f48[0], f48[1], f48[2], f48[3], f48[0], f48[1],
-            f48[2], f48[3], 0x00, 0x00, 0x00, 0x00,
-        ];
-        if (req.value == 0x0100) {
-            Some(InResponse::Accepted(freq))
-        } else {
-            Some(InResponse::Accepted(vol))
+        if req.request_type != RequestType::Class {
+            info!("Non-class request!");
+            return Some(InResponse::Rejected);
         }
+
+        if req.recipient != Recipient::Interface {
+            info!("Non-interface request: {}", req.recipient);
+            return Some(InResponse::Rejected);
+        }
+
+        let value_bytes = req.value.to_le_bytes();
+        let cs = value_bytes[1];
+        let cn = value_bytes[0];
+
+        let index_bytes = req.index.to_le_bytes();
+        let entity_id = index_bytes[1];
+        let interface_id = index_bytes[0];
+
+        match req.direction {
+            Direction::Out => {
+                info!("Out/Set request!");
+            }
+            Direction::In => {
+                info!("In/Get request!");
+
+                info!(
+                    "Entity: {}, CS: {}, CN:{}, Request: {}",
+                    entity_id, cs, cn, req.request
+                );
+                match entity_id {
+                    UAC2_ENTITY_CLOCK => match req.request {
+                        CUR => {
+                            copy_to_buf(buf, &freq48);
+                            return Some(InResponse::Accepted(buf));
+                        }
+                        RANGE => {
+                            copy_to_buf(buf, &freq);
+                            return Some(InResponse::Accepted(buf));
+                        }
+
+                        _ => {
+                            info!("Invalid request: {}", req.request);
+                        }
+                    },
+                    UAC2_ENTITY_SPK_FEATURE_UNIT => match req.request {
+                        CUR => match cs {
+                            FU_VOLUME_CONTROL => {
+                                copy_to_buf(buf, &volmax);
+                                return Some(InResponse::Accepted(buf));
+                            }
+                            FU_MUTE_CONTROL => {
+                                copy_to_buf(buf, &unmuted);
+                                return Some(InResponse::Accepted(buf));
+                            }
+                            _ => {
+                                info!("Invalid CS: {}", req.request);
+                            }
+                        },
+                        RANGE => return Some(InResponse::Accepted(vol)),
+
+                        _ => {
+                            info!("Invalid request: {}", req.request);
+                        }
+                    },
+                    UAC2_ENTITY_MIC_INPUT_TERMINAL => info!("UAC2_ENTITY_MIC_INPUT_TERMINAL"),
+                    UAC2_ENTITY_MIC_OUTPUT_TERMINAL => info!("UAC2_ENTITY_MIC_OUTPUT_TERMINAL"),
+                    UAC2_ENTITY_SPK_OUTPUT_TERMINAL => info!("UAC2_ENTITY_SPK_OUTPUT_TERMINAL"),
+                    UAC2_ENTITY_SPK_INPUT_TERMINAL => info!("UAC2_ENTITY_SPK_INPUT_TERMINAL"),
+                    _ => {
+                        info!("Invalid control selector: {}", cs);
+                    }
+                }
+            }
+        }
+
+        info!("Rejected!");
+        Some(InResponse::Rejected)
     }
+}
+
+#[inline]
+fn copy_to_buf(buf: &mut [u8], src: &[u8]) {
+    buf[..src.len()].copy_from_slice(src);
+}
+
+#[inline]
+fn layout_3_range_fixed_2(value1: i32, value2: i32) -> [u8; 2 + 12 * 2] {
+    let value1_bytes: [u8; 4] = value1.to_le_bytes();
+    let value2_bytes: [u8; 4] = value2.to_le_bytes();
+    let num_subranges_bytes: [u8; 2] = (2 as u16).to_le_bytes();
+    let mut ret: [u8; 2 + 12 * 2] = [0; 2 + 12 * 2];
+    ret[0..2].copy_from_slice(&num_subranges_bytes);
+    ret[2..6].copy_from_slice(&value1_bytes);
+    ret[6..10].copy_from_slice(&value1_bytes);
+    ret[14..18].copy_from_slice(&value2_bytes);
+    ret[18..22].copy_from_slice(&value2_bytes);
+    return ret;
 }
 
 // UAC2 standard
@@ -563,6 +675,15 @@ const CLOCK_SOURCE: u8 = 0x0A;
 const CLOCK_SELECTOR: u8 = 0x0B;
 const CLOCK_MULTIPLIER: u8 = 0x0C;
 const SAMPLE_RATE_CONVERTER: u8 = 0x0D;
+
+//Requests
+const REQUEST_CODE_UNDEFINED: u8 = 0x00;
+const CUR: u8 = 0x01;
+const RANGE: u8 = 0x02;
+
+const FU_CONTROL_UNDEFINED: u8 = 0x00;
+const FU_MUTE_CONTROL: u8 = 0x01;
+const FU_VOLUME_CONTROL: u8 = 0x02;
 
 //USB Terminal Types
 const USB_UNDEFINED: [u8; 2] = (0x0100 as u16).to_le_bytes();

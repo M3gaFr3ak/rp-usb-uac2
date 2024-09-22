@@ -3,24 +3,29 @@
 
 mod uac2;
 
+use core::borrow::BorrowMut;
 use core::cell::RefCell;
 
+use cortex_m::interrupt::Mutex;
+use cortex_m::prelude::_embedded_hal_blocking_delay_DelayMs;
 use cortex_m::register::control::read;
-use embassy_futures::join::join;
+use embassy_futures::join::{join, join3};
 
-use defmt::{info, unwrap};
+use defmt::info;
 use embassy_executor::Spawner;
+use embassy_futures::poll_once;
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, Instance, InterruptHandler};
 use embassy_sync::blocking_mutex::NoopMutex;
 use embassy_time::{Duration, Timer};
-use embassy_usb::driver::{Endpoint, EndpointIn, EndpointOut};
-use embassy_usb::msos::{self, windows_version};
-use embassy_usb::UsbDevice;
+use embassy_usb::driver::{Endpoint, EndpointOut};
 use embedded_alloc::LlffHeap as Heap;
+use embedded_hal::delay;
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
-use uac2::{AudioReaderWriter, State, UAC2};
+use uac2::{AudioReader, AudioReaderWriter, AudioWriter, ControlChanged, State, UAC2};
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
@@ -88,49 +93,76 @@ async fn main(spawner: Spawner) {
 
     //let uac2_fut = async { uac2_class.stuff().await };
 
-    let (mut _control, mut reader_writer) = uac2_class.split();
+    let (mut _control, mut reader_writer): (
+        ControlChanged<'_>,
+        AudioReaderWriter<'_, Driver<'_, USB>>,
+    ) = uac2_class.split();
+
+    let (mut reader, mut writer) = reader_writer.split();
 
     // Run everything concurrently.
     // If we had made everything `'static` above instead, we could do this using separate tasks instead.
-    join(usb_fut, stuff(&mut reader_writer)).await;
+    join3(usb_fut, receive_task(&mut reader), send_task(&mut writer)).await;
 }
 
-pub async fn stuff<'d>(reader_writer: &mut AudioReaderWriter<'d, Driver<'d, USB>>) {
-    struct Sharable {
-        mic_data: [u8; 200],
-        new_data: bool,
-        data_len: usize,
+pub async fn send_task<'d, T: Instance + 'd>(writer: &mut AudioWriter<'d, Driver<'d, T>>) {
+    let mut data: [u8; 98] = [0; 98];
+    let mut small_rng = SmallRng::seed_from_u64(0x3675978356739456);
+    data.iter_mut()
+        .enumerate()
+        .for_each(|a| *a.1 = small_rng.gen());
+
+    loop {
+        writer.wait_enabled().await;
+        info!("Connected");
+        loop {
+            match writer.write(&data).await {
+                Ok(_) => {
+                    info!("Sent stuff");
+
+                    Timer::after(Duration::from_micros(1000)).await;
+                }
+                Err(error) => {
+                    info!("Write error {:#?}", error);
+                    break;
+                }
+            }
+        }
+        info!("Disconnected");
     }
+}
+
+pub async fn receive_task<'d, T: Instance + 'd>(reader: &mut AudioReader<'d, Driver<'d, T>>) {
     loop {
         let mut data = [0; 400];
-        reader_writer.read_ep_spk.wait_enabled().await;
+        reader.wait_enabled().await;
         info!("Connected");
-        match reader_writer.read_ep_spk.read(&mut data).await {
-            Ok(n) => {
-                info!("Read stuff {:a}", data[..n]);
-                //info!("Got bulk: {:a}", data[..n]);
-                // Echo back to the host:
-                // write_ep.write(&data[..n]).await.ok();
 
-                /*
-                let mut sharable = mutex.borrow().borrow_mut();
+        loop {
+            match reader.read(&mut data).await {
+                Ok(n) => {
+                    info!("Read stuff {:a}", data[..n]);
+                    //info!("Got bulk: {:a}", data[..n]);
+                    // Echo back to the host:
+                    // write_ep.write(&data[..n]).await.ok();
 
-                data.chunks(4)
-                    .zip(sharable.mic_data.chunks_mut(2))
-                    .for_each(|(chunk, output)| {
-                        let left = u16::from_le_bytes(chunk[0..2].try_into().unwrap());
-                        let right = u16::from_le_bytes(chunk[2..4].try_into().unwrap());
-                        output.copy_from_slice(
-                            &((((left as i16) >> 1) + ((right as i16) >> 1)) as i16).to_le_bytes(),
-                        );
-                    });
-                sharable.data_len = n;
-                sharable.new_data = true;
-                 */
-            }
-            Err(error) => {
-                info!("Read error {:#?}", error);
-                break;
+                    let mut mic_data: [u8; 200] = [0; 200];
+                    data.chunks(4)
+                        .zip(mic_data.chunks_mut(2))
+                        .for_each(|(chunk, output)| {
+                            let left = u16::from_le_bytes(chunk[0..2].try_into().unwrap());
+                            let right = u16::from_le_bytes(chunk[2..4].try_into().unwrap());
+                            output.copy_from_slice(
+                                &((((left as i16) >> 1) + ((right as i16) >> 1)) as i16)
+                                    .to_le_bytes(),
+                            );
+                        });
+                    let data_len: usize = n / 2;
+                }
+                Err(error) => {
+                    info!("Read error {:#?}", error);
+                    break;
+                }
             }
         }
         info!("Disconnected");
