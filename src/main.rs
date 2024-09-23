@@ -4,14 +4,20 @@
 mod uac2;
 mod uac2_constants;
 
+use core::f32::consts::E;
+use core::sync::atomic::AtomicBool;
+
 use embassy_futures::join::join;
 
 use defmt::{info, unwrap};
 use embassy_executor::Spawner;
+use embassy_futures::select::{select, Either};
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, Instance, InterruptHandler};
-use embassy_time::Instant;
+use embassy_sync::blocking_mutex::raw::{NoopRawMutex, ThreadModeRawMutex};
+use embassy_sync::signal::Signal;
+use embassy_time::{Instant, Timer};
 use embassy_usb::UsbDevice;
 use embedded_alloc::LlffHeap as Heap;
 use rand::rngs::SmallRng;
@@ -117,7 +123,22 @@ pub async fn send_task<'d, T: Instance + 'd>(writer: &mut AudioWriter<'d, Driver
 
         let mut last_micros: u64 = 0;
         loop {
-            match writer.write_16(&data).await {
+            let first: embassy_futures::select::Either<(), AtomicBool> =
+                select(Timer::after_micros(900), SIGNAL.wait()).await;
+            let mut write_fut: Result<(), embassy_usb::driver::EndpointError>;
+            if let Either::Second(_) = first {
+                SIGNAL.reset();
+                write_fut = writer.write_16(unsafe { &BUFFER }).await;
+            }else {
+                write_fut = writer.write_16(&data).await
+            }
+            //let mut data_new = Option::None;
+            //while (data_new.is_none()) {
+            //    data_new = SIGNAL.try_take();
+            //}
+
+            //match writer.write_16(&data).await {
+            match write_fut {
                 Ok(_) => {
                     //info!("Sent stuff");
                     //let current_micros = Instant::now().as_micros();
@@ -134,6 +155,9 @@ pub async fn send_task<'d, T: Instance + 'd>(writer: &mut AudioWriter<'d, Driver
         info!("Disconnected");
     }
 }
+
+static SIGNAL: Signal<ThreadModeRawMutex, AtomicBool> = Signal::new();
+static mut BUFFER: [u8; 98] = [0; 98];
 
 pub async fn receive_task<'d, T: Instance + 'd>(reader: &mut AudioReader<'d, Driver<'d, T>>) {
     loop {
@@ -155,13 +179,12 @@ pub async fn receive_task<'d, T: Instance + 'd>(reader: &mut AudioReader<'d, Dri
                     // Echo back to the host:
                     // write_ep.write(&data[..n]).await.ok();
 
-                    
-                    let mut _mic_data: [u8; 200] = [0; 200];
+                    let mut _mic_data: [u8; 98] = [0; 98];
                     data.chunks(4)
                         .zip(_mic_data.chunks_mut(2))
                         .for_each(|(chunk, output)| {
-                            let left = u16::from_le_bytes(chunk[0..2].try_into().unwrap());
-                            let right = u16::from_le_bytes(chunk[2..4].try_into().unwrap());
+                            let left = i16::from_le_bytes(chunk[0..2].try_into().unwrap());
+                            let right = i16::from_le_bytes(chunk[2..4].try_into().unwrap());
                             output.copy_from_slice(
                                 &((((left as i16) >> 1) + ((right as i16) >> 1)) as i16)
                                     .to_le_bytes(),
@@ -169,9 +192,10 @@ pub async fn receive_task<'d, T: Instance + 'd>(reader: &mut AudioReader<'d, Dri
                         });
                     let _data_len: usize = n / 2;
 
+                    unsafe { BUFFER.copy_from_slice(&_mic_data) };
+                    SIGNAL.signal(AtomicBool::new(true));
                     //let chunking_micros = Instant::now().as_micros();
                     //info!("Chunking time: {}", chunking_micros - current_micros);
-                    
                 }
                 Err(error) => {
                     info!("Read error {:#?}", error);
