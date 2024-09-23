@@ -6,3 +6,15 @@ target = "thumbv6m-none-eabi"
 
 [env]
 DEFMT_LOG = "info"
+
+[profile.release]
+lto = true
+opt-level = "s"
+incremental = false
+codegen-units = 1
+# note: debug = true is okay - debuginfo isn't flashed to the device!
+debug = true
+
+[profile.dev]
+opt-level = "s"
+debug = true

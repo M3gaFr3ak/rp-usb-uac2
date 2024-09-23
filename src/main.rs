@@ -2,28 +2,18 @@
 #![no_main]
 
 mod uac2;
+mod uac2_constants;
 
-use core::borrow::BorrowMut;
-use core::cell::{LazyCell, RefCell};
-
-use cortex_m::interrupt::Mutex;
-use cortex_m::prelude::_embedded_hal_blocking_delay_DelayMs;
-use cortex_m::register::control::read;
-use embassy_futures::join::{join, join3};
+use embassy_futures::join::join;
 
 use defmt::{info, unwrap};
 use embassy_executor::Spawner;
-use embassy_futures::poll_once;
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::USB;
-use embassy_rp::rtc::DateTime;
 use embassy_rp::usb::{Driver, Instance, InterruptHandler};
-use embassy_sync::once_lock::OnceLock;
-use embassy_time::{Duration, Instant, Ticker, Timer};
-use embassy_usb::driver::{Endpoint, EndpointOut};
+use embassy_time::Instant;
 use embassy_usb::UsbDevice;
 use embedded_alloc::LlffHeap as Heap;
-use embedded_hal::delay;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
@@ -84,17 +74,17 @@ async fn main(spawner: Spawner) {
         builder
     };
 
-    let mut uac2_class: UAC2<'_, Driver<'_, USB>> = {
+    let uac2_class: UAC2<'_, Driver<'_, USB>> = {
         static STATE: StaticCell<State> = StaticCell::new();
         let state = STATE.init(State::new());
         UAC2::new(&mut builder, state)
     };
-    let mut usb = builder.build();
+    let usb = builder.build();
 
     unwrap!(spawner.spawn(usb_task(usb)));
     //let uac2_fut = async { uac2_class.stuff().await };
 
-    let (mut _control, mut reader_writer): (
+    let (mut _control, reader_writer): (
         ControlChanged<'_>,
         AudioReaderWriter<'_, Driver<'_, USB>>,
     ) = uac2_class.split();
@@ -127,15 +117,13 @@ pub async fn send_task<'d, T: Instance + 'd>(writer: &mut AudioWriter<'d, Driver
 
         let mut last_micros: u64 = 0;
         loop {
-
             match writer.write_16(&data).await {
                 Ok(_) => {
-                    info!("Sent stuff");
-                    let current_micros = Instant::now().as_micros();
-                    let delta = current_micros - last_micros;
-                    last_micros = current_micros;
-                    info!("Send delta: {}", delta);
-                    
+                    //info!("Sent stuff");
+                    //let current_micros = Instant::now().as_micros();
+                    //let delta = current_micros - last_micros;
+                    //last_micros = current_micros;
+                    //info!("Send delta: {}", delta);
                 }
                 Err(error) => {
                     info!("Write error {:#?}", error);
@@ -157,17 +145,17 @@ pub async fn receive_task<'d, T: Instance + 'd>(reader: &mut AudioReader<'d, Dri
         loop {
             match reader.read_16(&mut data).await {
                 Ok(n) => {
-                    info!("Read stuff {} bytes", n);
-                    let current_micros = Instant::now().as_micros();
-                    let delta = current_micros - last_micros;
-                    last_micros = current_micros;
-                    
-                    info!("Read delta: {}", delta);
+                    //info!("Read stuff {} bytes", n);
+                    //let current_micros = Instant::now().as_micros();
+                    //let delta = current_micros - last_micros;
+                    //last_micros = current_micros;
+
+                    //info!("Read delta: {}", delta);
                     //info!("Got bulk: {:a}", data[..n]);
                     // Echo back to the host:
                     // write_ep.write(&data[..n]).await.ok();
 
-                    /*
+                    
                     let mut _mic_data: [u8; 200] = [0; 200];
                     data.chunks(4)
                         .zip(_mic_data.chunks_mut(2))
@@ -181,9 +169,9 @@ pub async fn receive_task<'d, T: Instance + 'd>(reader: &mut AudioReader<'d, Dri
                         });
                     let _data_len: usize = n / 2;
 
-                    let chunking_micros = Instant::now().as_micros();
-                    info!("Chunking time: {}", chunking_micros - current_micros);
-                     */
+                    //let chunking_micros = Instant::now().as_micros();
+                    //info!("Chunking time: {}", chunking_micros - current_micros);
+                    
                 }
                 Err(error) => {
                     info!("Read error {:#?}", error);
