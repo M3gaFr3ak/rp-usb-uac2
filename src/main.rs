@@ -4,24 +4,24 @@
 mod uac2;
 
 use core::borrow::BorrowMut;
-use core::cell::RefCell;
+use core::cell::{LazyCell, RefCell};
 
 use cortex_m::interrupt::Mutex;
 use cortex_m::prelude::_embedded_hal_blocking_delay_DelayMs;
 use cortex_m::register::control::read;
 use embassy_futures::join::{join, join3};
 
-use defmt::info;
+use defmt::{info, unwrap};
 use embassy_executor::Spawner;
 use embassy_futures::poll_once;
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::USB;
+use embassy_rp::rtc::DateTime;
 use embassy_rp::usb::{Driver, Instance, InterruptHandler};
-use embassy_sync::blocking_mutex::raw::{NoopRawMutex, ThreadModeRawMutex};
-use embassy_sync::blocking_mutex::NoopMutex;
-use embassy_sync::pipe::Pipe;
-use embassy_time::{Duration, Timer};
+use embassy_sync::once_lock::OnceLock;
+use embassy_time::{Duration, Instant, Ticker, Timer};
 use embassy_usb::driver::{Endpoint, EndpointOut};
+use embassy_usb::UsbDevice;
 use embedded_alloc::LlffHeap as Heap;
 use embedded_hal::delay;
 use rand::rngs::SmallRng;
@@ -91,8 +91,7 @@ async fn main(spawner: Spawner) {
     };
     let mut usb = builder.build();
 
-    let usb_fut = usb.run();
-
+    unwrap!(spawner.spawn(usb_task(usb)));
     //let uac2_fut = async { uac2_class.stuff().await };
 
     let (mut _control, mut reader_writer): (
@@ -104,11 +103,16 @@ async fn main(spawner: Spawner) {
 
     // Run everything concurrently.
     // If we had made everything `'static` above instead, we could do this using separate tasks instead.
-    join3(usb_fut, receive_task(&mut reader), send_task(&mut writer)).await;
-    //join(usb_fut, send_task(&mut writer)).await;
+    join(receive_task(&mut reader), send_task(&mut writer)).await;
 }
 
-static PIPE: Pipe<ThreadModeRawMutex, 98> = Pipe::new();
+type MyUsbDriver = Driver<'static, USB>;
+type MyUsbDevice = UsbDevice<'static, MyUsbDriver>;
+
+#[embassy_executor::task]
+async fn usb_task(mut usb: MyUsbDevice) -> ! {
+    usb.run().await
+}
 
 pub async fn send_task<'d, T: Instance + 'd>(writer: &mut AudioWriter<'d, Driver<'d, T>>) {
     let mut data: [u8; 98] = [0; 98];
@@ -120,16 +124,18 @@ pub async fn send_task<'d, T: Instance + 'd>(writer: &mut AudioWriter<'d, Driver
     loop {
         writer.wait_enabled_16().await;
         info!("Connected");
-        loop {
 
-            //while !PIPE.is_full() {}
-            PIPE.read(data.as_mut()).await;
+        let mut last_micros: u64 = 0;
+        loop {
 
             match writer.write_16(&data).await {
                 Ok(_) => {
                     info!("Sent stuff");
-
-                    Timer::after(Duration::from_micros(100)).await;
+                    let current_micros = Instant::now().as_micros();
+                    let delta = current_micros - last_micros;
+                    last_micros = current_micros;
+                    info!("Send delta: {}", delta);
+                    
                 }
                 Err(error) => {
                     info!("Write error {:#?}", error);
@@ -147,17 +153,24 @@ pub async fn receive_task<'d, T: Instance + 'd>(reader: &mut AudioReader<'d, Dri
         reader.wait_enabled_16().await;
         info!("Connected");
 
+        let mut last_micros: u64 = 0;
         loop {
             match reader.read_16(&mut data).await {
                 Ok(n) => {
-                    info!("Read stuff {:a}", data[..n]);
+                    info!("Read stuff {} bytes", n);
+                    let current_micros = Instant::now().as_micros();
+                    let delta = current_micros - last_micros;
+                    last_micros = current_micros;
+                    
+                    info!("Read delta: {}", delta);
                     //info!("Got bulk: {:a}", data[..n]);
                     // Echo back to the host:
                     // write_ep.write(&data[..n]).await.ok();
 
-                    let mut mic_data: [u8; 200] = [0; 200];
+                    /*
+                    let mut _mic_data: [u8; 200] = [0; 200];
                     data.chunks(4)
-                        .zip(mic_data.chunks_mut(2))
+                        .zip(_mic_data.chunks_mut(2))
                         .for_each(|(chunk, output)| {
                             let left = u16::from_le_bytes(chunk[0..2].try_into().unwrap());
                             let right = u16::from_le_bytes(chunk[2..4].try_into().unwrap());
@@ -166,10 +179,11 @@ pub async fn receive_task<'d, T: Instance + 'd>(reader: &mut AudioReader<'d, Dri
                                     .to_le_bytes(),
                             );
                         });
-                    let data_len: usize = n / 2;
+                    let _data_len: usize = n / 2;
 
-                    //while !PIPE.is_empty() {}
-                    PIPE.write(&mic_data[..data_len]).await;
+                    let chunking_micros = Instant::now().as_micros();
+                    info!("Chunking time: {}", chunking_micros - current_micros);
+                     */
                 }
                 Err(error) => {
                     info!("Read error {:#?}", error);
@@ -178,16 +192,5 @@ pub async fn receive_task<'d, T: Instance + 'd>(reader: &mut AudioReader<'d, Dri
             }
         }
         info!("Disconnected");
-        /*             let write_fn = async {
-            loop {
-                if mutex.borrow().borrow().new_data {
-                    let sharable = mutex.borrow().borrow_mut();
-                    let _ = reader_writer
-                        .write_ep_mic
-                        .write(&sharable.mic_data[..sharable.data_len / 2])
-                        .await;
-                }
-            }
-        }; */
     }
 }
