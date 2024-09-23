@@ -17,7 +17,9 @@ use embassy_futures::poll_once;
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, Instance, InterruptHandler};
+use embassy_sync::blocking_mutex::raw::{NoopRawMutex, ThreadModeRawMutex};
 use embassy_sync::blocking_mutex::NoopMutex;
+use embassy_sync::pipe::Pipe;
 use embassy_time::{Duration, Timer};
 use embassy_usb::driver::{Endpoint, EndpointOut};
 use embedded_alloc::LlffHeap as Heap;
@@ -103,7 +105,10 @@ async fn main(spawner: Spawner) {
     // Run everything concurrently.
     // If we had made everything `'static` above instead, we could do this using separate tasks instead.
     join3(usb_fut, receive_task(&mut reader), send_task(&mut writer)).await;
+    //join(usb_fut, send_task(&mut writer)).await;
 }
+
+static PIPE: Pipe<ThreadModeRawMutex, 98> = Pipe::new();
 
 pub async fn send_task<'d, T: Instance + 'd>(writer: &mut AudioWriter<'d, Driver<'d, T>>) {
     let mut data: [u8; 98] = [0; 98];
@@ -113,14 +118,18 @@ pub async fn send_task<'d, T: Instance + 'd>(writer: &mut AudioWriter<'d, Driver
         .for_each(|a| *a.1 = small_rng.gen());
 
     loop {
-        writer.wait_enabled().await;
+        writer.wait_enabled_16().await;
         info!("Connected");
         loop {
-            match writer.write(&data).await {
+
+            //while !PIPE.is_full() {}
+            PIPE.read(data.as_mut()).await;
+
+            match writer.write_16(&data).await {
                 Ok(_) => {
                     info!("Sent stuff");
 
-                    Timer::after(Duration::from_micros(1000)).await;
+                    Timer::after(Duration::from_micros(100)).await;
                 }
                 Err(error) => {
                     info!("Write error {:#?}", error);
@@ -135,11 +144,11 @@ pub async fn send_task<'d, T: Instance + 'd>(writer: &mut AudioWriter<'d, Driver
 pub async fn receive_task<'d, T: Instance + 'd>(reader: &mut AudioReader<'d, Driver<'d, T>>) {
     loop {
         let mut data = [0; 400];
-        reader.wait_enabled().await;
+        reader.wait_enabled_16().await;
         info!("Connected");
 
         loop {
-            match reader.read(&mut data).await {
+            match reader.read_16(&mut data).await {
                 Ok(n) => {
                     info!("Read stuff {:a}", data[..n]);
                     //info!("Got bulk: {:a}", data[..n]);
@@ -158,6 +167,9 @@ pub async fn receive_task<'d, T: Instance + 'd>(reader: &mut AudioReader<'d, Dri
                             );
                         });
                     let data_len: usize = n / 2;
+
+                    //while !PIPE.is_empty() {}
+                    PIPE.write(&mic_data[..data_len]).await;
                 }
                 Err(error) => {
                     info!("Read error {:#?}", error);

@@ -6,14 +6,13 @@ use core::i16;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
-use embassy_futures::select;
-use embassy_rp::usb::{SynchronizationType, UsageType};
 
 use alloc::vec;
 
 use defmt::info;
 use embassy_sync::waitqueue::WakerRegistration;
 use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
+use embassy_usb::descriptor::{SynchronizationType, UsageType};
 use embassy_usb::driver::{Direction, Driver, Endpoint, EndpointError, EndpointIn, EndpointOut};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Handler};
@@ -84,57 +83,81 @@ impl<'a> Control<'a> {
 
 pub struct AudioReaderWriter<'d, D: Driver<'d>> {
     pub conf_ep: D::EndpointIn,
-    pub read_ep_spk: D::EndpointOut,
-    pub write_ep_mic: D::EndpointIn,
+    pub read_ep_spk_16: D::EndpointOut,
+    pub read_ep_spk_24: D::EndpointOut,
+    pub write_ep_mic_16: D::EndpointIn,
+    pub write_ep_mic_24: D::EndpointIn,
 }
 
 impl<'d, D: Driver<'d>> AudioReaderWriter<'d, D> {
     pub fn split(self) -> (AudioReader<'d, D>, AudioWriter<'d, D>) {
         (
             AudioReader {
-                read_ep_spk: self.read_ep_spk,
+                read_ep_spk_16: self.read_ep_spk_16,
+                read_ep_spk_24: self.read_ep_spk_24,
             },
             AudioWriter {
                 _conf_ep: self.conf_ep,
-                write_ep_mic: self.write_ep_mic,
+                write_ep_mic_16: self.write_ep_mic_16,
+                write_ep_mic_24: self.write_ep_mic_24,
             },
         )
     }
 }
 
 pub struct AudioReader<'d, D: Driver<'d>> {
-    read_ep_spk: D::EndpointOut,
+    pub read_ep_spk_16: D::EndpointOut,
+    pub read_ep_spk_24: D::EndpointOut,
 }
 
 impl<'d, D: Driver<'d>> AudioReader<'d, D> {
-    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
-        self.read_ep_spk.read(buf).await
+    pub async fn read_16(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
+        self.read_ep_spk_16.read(buf).await
     }
 
-    pub async fn wait_enabled(&mut self) {
-        self.read_ep_spk.wait_enabled().await
+    pub async fn wait_enabled_16(&mut self) {
+        self.read_ep_spk_16.wait_enabled().await
+    }
+
+    pub async fn read_24(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
+        self.read_ep_spk_24.read(buf).await
+    }
+
+    pub async fn wait_enabled_24(&mut self) {
+        self.read_ep_spk_24.wait_enabled().await
     }
 }
 
 pub struct AudioWriter<'d, D: Driver<'d>> {
     _conf_ep: D::EndpointIn,
-    write_ep_mic: D::EndpointIn,
+    pub write_ep_mic_16: D::EndpointIn,
+    pub write_ep_mic_24: D::EndpointIn,
 }
 
 impl<'d, D: Driver<'d>> AudioWriter<'d, D> {
-    pub async fn write(&mut self, buf: &[u8]) -> Result<(), EndpointError> {
-        self.write_ep_mic.write(buf).await
+    pub async fn write_16(&mut self, buf: &[u8]) -> Result<(), EndpointError> {
+        self.write_ep_mic_16.write(buf).await
     }
 
-    pub async fn wait_enabled(&mut self) {
-        self.write_ep_mic.wait_enabled().await
+    pub async fn wait_enabled_16(&mut self) {
+        self.write_ep_mic_16.wait_enabled().await
+    }
+
+    pub async fn write_24(&mut self, buf: &[u8]) -> Result<(), EndpointError> {
+        self.write_ep_mic_24.write(buf).await
+    }
+
+    pub async fn wait_enabled_24(&mut self) {
+        self.write_ep_mic_24.wait_enabled().await
     }
 }
 
 pub struct UAC2<'d, D: Driver<'d>> {
     conf_ep: D::EndpointIn,
-    read_ep_spk_1: D::EndpointOut,
-    write_ep_mic_1: D::EndpointIn,
+    pub read_ep_spk_16: D::EndpointOut,
+    pub read_ep_spk_24: D::EndpointOut,
+    pub write_ep_mic_16: D::EndpointIn,
+    pub write_ep_mic_24: D::EndpointIn,
     control: &'d ControlShared,
 }
 
@@ -326,7 +349,7 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
         alt_as_spk_1.descriptor(CS_INTERFACE, descr_format_spk_1);
 
         //  Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1
-        let mut read_ep_spk_1 = alt_as_spk_1.endpoint_isochronous_out(
+        let mut read_ep_spk_16 = alt_as_spk_1.endpoint_isochronous_out(
             196,
             1,
             SynchronizationType::Adaptive,
@@ -361,13 +384,12 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
         ];
         alt_as_spk_2.descriptor(CS_INTERFACE, descr_format_spk_1);
         //  Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1
-        let read_ep_spk_2 = alt_as_spk_2.endpoint_isochronous_out_allocated(
+        let read_ep_spk_24 = alt_as_spk_2.endpoint_isochronous_out(
             392,
             1,
             SynchronizationType::Adaptive,
             UsageType::DataEndpoint,
             &[],
-            &mut read_ep_spk_1,
         );
         //  Class-Specific AS Isochronous Audio Data Endpoint Descriptor(4.10.1.2)
         let descr_ep_spk_2 = descr_ep_spk_1;
@@ -414,7 +436,7 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
         ];
         alt_as_mic_1.descriptor(CS_INTERFACE, descr_format_mic_1);
         //  Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1
-        let mut write_ep_mic_1 = alt_as_mic_1.endpoint_isochronous_in(
+        let mut write_ep_mic_16 = alt_as_mic_1.endpoint_isochronous_in(
             98,
             1,
             SynchronizationType::Asynchronous,
@@ -451,13 +473,12 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
         ];
         alt_as_mic_2.descriptor(CS_INTERFACE, descr_format_mic_2);
         //  Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1
-        let write_ep_mic_2 = alt_as_mic_2.endpoint_isochronous_in_allocated(
+        let write_ep_mic_24 = alt_as_mic_2.endpoint_isochronous_in(
             196,
             1,
             SynchronizationType::Asynchronous,
             UsageType::DataEndpoint,
             &[],
-            &mut write_ep_mic_1,
         );
         //  Class-Specific AS Isochronous Audio Data Endpoint Descriptor(4.10.1.2)
         let descr_ep_mic_2 = descr_ep_mic_1;
@@ -475,8 +496,10 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
 
         UAC2 {
             conf_ep,
-            read_ep_spk_1,
-            write_ep_mic_1,
+            read_ep_spk_16,
+            read_ep_spk_24,
+            write_ep_mic_16,
+            write_ep_mic_24,
             control: control_shared,
         }
     }
@@ -488,8 +511,10 @@ impl<'d, D: Driver<'d>> UAC2<'d, D> {
             },
             AudioReaderWriter {
                 conf_ep: self.conf_ep,
-                read_ep_spk: self.read_ep_spk_1,
-                write_ep_mic: self.write_ep_mic_1,
+                read_ep_spk_16: self.read_ep_spk_16,
+                read_ep_spk_24: self.read_ep_spk_24,
+                write_ep_mic_16: self.write_ep_mic_16,
+                write_ep_mic_24: self.write_ep_mic_24,
             },
         )
     }
